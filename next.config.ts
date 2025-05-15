@@ -1,39 +1,30 @@
-/** @type {import('next').NextConfig} */
-const nextConfig = {
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
   reactStrictMode: true,
   swcMinify: true,
   
-  // New in Next.js 15 - experimental features
   experimental: {
-    // Enable server actions (stable in Next.js 15)
+    // Use boolean for serverActions as defined in our custom type
     serverActions: true,
     
-    // Enable Turbopack for faster builds (stable for dev in Next.js 15)
-    turbo: {
-      // Enable Turbopack for builds (alpha in Next.js 15.3)
-      build: process.env.TURBO_BUILD === 'true',
-    },
-    
-    // Enable after() API for background tasks
-    after: true,
-    
-    // Enable View Transitions API (experimental in Next.js 15.2)
-    viewTransitions: process.env.NODE_ENV === 'development',
-    
-    // New Node.js Middleware runtime instead of Edge (experimental in Next.js 15.2)
+    // Instrumentation hook
     instrumentationHook: true,
     
-    // Enable React Optimistic State (experimental)
-    optimisticState: true,
-    
-    // Client instrumentation hook for analytics, etc.
+    // Other stable experimental features
+    after: true,
     clientInstrumentation: true,
+    
+    // Use turbopack instead of turbo
+    turbopack: {
+      loaders: {},
+    },
   },
   
-  // Enable static route indicator in dev mode
+  // Dev indicators
   devIndicators: {
     buildActivity: true,
-    staticRouteIndicator: true,
   },
   
   // Image optimization configuration
@@ -71,10 +62,22 @@ const nextConfig = {
             key: 'X-Frame-Options',
             value: 'SAMEORIGIN',
           },
+          {
+            key: 'Referrer-Policy',
+            value: 'same-origin',
+          },
+          {
+            key: 'Content-Security-Policy',
+            value: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' data:; connect-src 'self'",
+          },
+          {
+            key: 'Permissions-Policy',
+            value: 'camera=(), microphone=(), geolocation=()'
+          }
         ],
       },
     ];
   },
 };
 
-module.exports = nextConfig;
+export default nextConfig;

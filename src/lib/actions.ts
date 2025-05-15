@@ -7,8 +7,6 @@ import { unstable_after as after } from 'next/server';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db';
 
-// New Next.js 15 feature: 'use server' directive automatically applies to all exports
-
 // Course creation schema
 const courseSchema = z.object({
   courseName: z.string().min(1, 'Course name is required'),
@@ -20,13 +18,11 @@ const courseSchema = z.object({
   currency: z.string().default('GBP'),
   selectedIntake: z.string().min(1, 'Intake is required'),
   selectedDuration: z.string().min(1, 'Duration is required'),
-  submissionDeadline: z.date().optional(),
+  submissionDeadline: z.string().optional().transform(val => val ? new Date(val) : undefined),
   offerTAT: z.coerce.number().optional(),
   expressOffer: z.boolean().default(false),
   modeOfStudy: z.string().optional(),
 });
-
-type CourseFormData = z.infer<typeof courseSchema>;
 
 // Create course action
 export async function createCourse(formData: FormData) {
@@ -37,49 +33,51 @@ export async function createCourse(formData: FormData) {
     throw new Error('Unauthorized');
   }
   
-  // Parse and validate form data
-  const parsed = Object.fromEntries(formData.entries());
+  // Parse form data
+  const rawData = Object.fromEntries(formData.entries());
+  rawData.expressOffer = rawData.expressOffer === 'on';
   
-  // Handle dates specifically
-  if (parsed.submissionDeadline) {
-    parsed.submissionDeadline = new Date(parsed.submissionDeadline as string);
-  }
-  
-  // Handle boolean fields
-  parsed.expressOffer = parsed.expressOffer === 'on';
-
-  // Validate using zod
-  const validatedData = courseSchema.parse(parsed);
+  // Validate data
+  const validatedData = courseSchema.parse(rawData);
   
   try {
     // Create course in database
-    await db.course.create({
-      data: validatedData,
+    const course = await db.course.create({
+      data: {
+        ...validatedData,
+        tuitionFee: validatedData.tuitionFee.toString(),
+      },
     });
     
-    // New in Next.js 15: Use after() for non-blocking background tasks
-    after(() => {
-      console.log(`Course created: ${validatedData.courseName}`);
-      
-      // Additional background tasks like sending notifications
-      // This runs after the response is sent to the client
+    // Background task - log activity
+    after(async () => {
+      await db.userActivity.create({
+        data: {
+          userId: session.user.id,
+          type: 'CREATE_COURSE',
+          details: `Created course: ${course.courseName} (${course.id})`,
+        },
+      });
     });
     
-    // Revalidate courses page to reflect changes immediately
     revalidatePath('/courses');
-    
-    // Redirect to courses page
-    redirect('/courses');
+    return { success: true, course };
   } catch (error) {
     console.error('Failed to create course:', error);
     throw new Error('Failed to create course. Please try again.');
   }
 }
 
-// Get courses with filtering (server action)
+// Get courses with filtering
 export async function getCourses(
   searchParams: Record<string, string | string[] | undefined> = {}
 ) {
+  const session = await auth();
+  
+  if (!session) {
+    throw new Error('Unauthorized');
+  }
+  
   const {
     query,
     type = 'smart',
@@ -94,28 +92,53 @@ export async function getCourses(
     limit = '10',
   } = searchParams;
   
-  // Build where clause for database query
+   // Build where clause
   const where: any = {};
   
   if (query) {
+    const searchString = query as string;
+    
     if (type === 'exact') {
-      where.courseName = query;
+      where.courseName = searchString;
     } else {
-      where.courseName = {
-        contains: query,
-        mode: 'insensitive',
-      };
+      // Use standard contains search - more complex searches would require raw SQL
+      where.OR = [
+        {
+          courseName: {
+            contains: searchString,
+            mode: 'insensitive',
+          }
+        },
+        {
+          courseNameUz: {
+            contains: searchString,
+            mode: 'insensitive',
+          }
+        },
+        {
+          description: {
+            contains: searchString,
+            mode: 'insensitive',
+          }
+        },
+        {
+          descriptionUz: {
+            contains: searchString,
+            mode: 'insensitive',
+          }
+        }
+      ];
     }
   }
   
   if (level) {
-    where.level = level;
+    where.level = level as string;
   }
   
   if (university) {
     where.university = {
       name: {
-        contains: university,
+        contains: university as string,
         mode: 'insensitive',
       },
     };
@@ -136,11 +159,11 @@ export async function getCourses(
   }
   
   if (intake) {
-    where.selectedIntake = intake;
+    where.selectedIntake = intake as string;
   }
   
   if (duration) {
-    where.selectedDuration = duration;
+    where.selectedDuration = duration as string;
   }
   
   if (expressOffer) {
@@ -149,15 +172,11 @@ export async function getCourses(
   
   // Pagination
   const pageNum = parseInt(page as string);
-  const limitNum = Math.min(parseInt(limit as string), 50); // Cap at 50 items per page
+  const limitNum = Math.min(parseInt(limit as string), 50);
   const skip = (pageNum - 1) * limitNum;
   
-  // New in Next.js 15: use cache directive (when imported)
-  // Using React's cache() for memoization
-  // This is automatically applied for server components
-  
   try {
-    // Execute query
+    // Execute query with proper pagination and eager loading
     const [courses, total] = await Promise.all([
       db.course.findMany({
         where,
@@ -181,8 +200,6 @@ export async function getCourses(
     
     // Calculate pagination metadata
     const totalPages = Math.ceil(total / limitNum);
-    const hasNextPage = pageNum < totalPages;
-    const hasPrevPage = pageNum > 1;
     
     return {
       courses,
@@ -191,8 +208,8 @@ export async function getCourses(
         limit: limitNum,
         total,
         totalPages,
-        hasNextPage,
-        hasPrevPage,
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
       },
     };
   } catch (error) {
@@ -201,30 +218,50 @@ export async function getCourses(
   }
 }
 
+// Get universities
+export async function getUniversities() {
+  try {
+    const universities = await db.university.findMany({
+      orderBy: {
+        name: 'asc',
+      },
+    });
+    
+    return universities;
+  } catch (error) {
+    console.error('Error fetching universities:', error);
+    throw new Error('Failed to fetch universities. Please try again.');
+  }
+}
+
 // Delete course action
-export async function deleteCourse(formData: FormData) {
+export async function deleteCourse(id: string) {
   const session = await auth();
   
   if (!session || session.user.role !== 'ADMIN') {
     throw new Error('Unauthorized');
   }
   
-  const courseId = formData.get('courseId') as string;
-  
-  if (!courseId) {
-    throw new Error('Course ID is required');
-  }
-  
   try {
+    // Delete course
     await db.course.delete({
       where: {
-        id: courseId,
+        id,
       },
     });
     
-    // Revalidate courses page
-    revalidatePath('/courses');
+    // Log activity
+    after(async () => {
+      await db.userActivity.create({
+        data: {
+          userId: session.user.id,
+          type: 'DELETE_COURSE',
+          details: `Deleted course: ${id}`,
+        },
+      });
+    });
     
+    revalidatePath('/courses');
     return { success: true };
   } catch (error) {
     console.error('Failed to delete course:', error);
